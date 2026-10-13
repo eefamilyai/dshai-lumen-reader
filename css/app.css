@@ -429,7 +429,9 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:3px solid var(
 .v-flag{width:25px;height:25px;border-radius:8px;display:grid;place-items:center;flex:0 0 auto;
   font-size:12.5px;background:var(--surface-3);font-weight:600}
 .v-meta{min-width:0;flex:1 1 auto}
-.v-name{font-size:12.6px;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v-name{font-size:12.6px;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.v-grade{font-size:9.6px;font-weight:700;letter-spacing:.02em;padding:1px 5px;border-radius:5px;background:var(--surface-3);color:var(--ink-3);flex:0 0 auto}
+.v-grade.top{background:linear-gradient(142deg,var(--accent),var(--accent-2));color:var(--accent-ink)}
 .v-tag{font-size:10.8px;color:var(--ink-3)}
 .v-play{width:27px;height:27px;border-radius:50%;display:grid;place-items:center;color:var(--ink-3);
   flex:0 0 auto;transition:all var(--t-fast)}

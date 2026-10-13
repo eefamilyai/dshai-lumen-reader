@@ -5,7 +5,8 @@ import {
   buildModel, cleanByExt, detectLang,
 } from './text.js';
 import {
-  NativeEngine, KokoroEngine, audioCtx, unlockAudio, pickVoice, groupVoices,
+  NativeEngine, KokoroEngine, audioCtx, unlockAudio, pickVoice, groupVoices, pauseAfter,
+  EN_PREFERRED,
 } from './engine.js';
 
 /* ---------------------------------------------------------- */
@@ -39,6 +40,7 @@ const DEFAULTS = {
   lineHeight: 1.85,
   paraGap: 1.05,
   autoScroll: true,
+  humanize: true,          // natural pauses and fades
   dimDone: true,
   highlight: 'block',      // block | underline
   skipCode: true,
@@ -46,6 +48,20 @@ const DEFAULTS = {
 
 const KEY = 'lumen-reader-v1';
 let S = loadSettings();
+migrateVoiceIds();
+
+/**
+ * Voice ids gained a language prefix when the engine learned to hold two
+ * packs. Fold any stored bare id ("zf_001") into the prefixed form.
+ */
+function migrateVoiceIds() {
+  for (const k of ['voiceKokoro_zh', 'voiceKokoro_en']) {
+    const v = S[k];
+    if (v && !v.includes(':')) {
+      S[k] = (k.endsWith('_zh') ? 'zh:' : 'en:') + v;
+    }
+  }
+}
 
 function loadSettings() {
   try {
@@ -107,15 +123,14 @@ async function bootNative() {
 /** If the user previously chose neural voices, warm them silently. */
 async function restoreEngine() {
   if (S.engine !== 'kokoro') return;
-  const eng = engines.kokoro;
   try {
-    await eng.init(() => {});
-    state.engine = eng;
+    const ok = await ensurePack('zh', { quiet: true });
+    if (!ok) throw new Error('zh pack failed');
+    state.engine = engines.kokoro;
     state.engineId = 'kokoro';
     autoPickVoices();
     updateEnginePill();
-    renderSettings();
-    if (!eng.fast) warnSlowBackend();
+    warmOtherPack('zh');
   } catch (e) {
     console.warn('neural restore failed', e);
     S.engine = 'native'; saveSettings();
@@ -386,12 +401,16 @@ function currentVoiceFor(lang) {
 function autoPickVoices(langs) {
   const eng = activeEngine();
   if (!eng.voices.length) return;
-  // Prefer a local, natural voice per language; remember only if unset.
   for (const lang of ['zh', 'en']) {
     const k = voiceKey(eng.id, lang);
-    if (!S[k] || !eng.voices.some(v => v.id === S[k])) {
-      const best = pickVoice(eng.voices, lang, null);
-      if (best) S[k] = best.id;
+    const pool = eng.voices.filter(v => (v.base || v.lang) === lang);
+    if (!pool.length) continue;
+    if (!S[k] || !pool.some(v => v.id === S[k])) {
+      let best = null;
+      if (eng.id === 'kokoro' && lang === 'en') {
+        best = EN_PREFERRED.map(id => pool.find(v => v.id === 'en:' + id)).find(Boolean) || null;
+      }
+      S[k] = (best || pickVoice(pool, lang, null) || pool[0]).id;
     }
   }
   saveSettings();
@@ -489,6 +508,18 @@ async function pump() {
                   || currentVoiceFor('en');
     if (!voice) { toast('No voice available for this language.', 'err'); stopAll(); return; }
 
+    // Make sure the pack that owns this sentence's voice has arrived.
+    if (eng.id === 'kokoro') {
+      const needLang = voice.lang;
+      const rec = eng.packs[needLang];
+      if (!rec || !rec.ready) {
+        highlight(i); scrollTo(i); updateClock(i);
+        const ok = await ensurePack(needLang);
+        if (myRun !== state.run) return;
+        if (!ok) { toast('Could not load ' + needLang + ' voices.', 'err'); stopAll(); return; }
+      }
+    }
+
     highlight(i);
     scrollTo(i);
     updateClock(i);
@@ -514,6 +545,7 @@ async function pump() {
         speed: S.speed,
         pitch: S.pitch,
         volume: S.volume,
+        pauseAfter: S.humanize ? pauseAfter(s.text, s.isParaEnd) : 0.02,
         signal: ac.signal,
       }, {
         signal: ac.signal,
@@ -724,48 +756,61 @@ function setSpeed(v) {
 /* ---------------------------------------------------------- */
 /* Kokoro loading                                              */
 /* ---------------------------------------------------------- */
-async function ensureKokoro() {
+/** Load the neural pack for one language, with a visible progress bar. */
+async function ensurePack(lang, { quiet = false } = {}) {
   const eng = engines.kokoro;
-  if (eng.ready) return true;
+  const rec = eng.packs[lang];
+  if (rec && rec.ready) return true;
 
-  $('buffer').hidden = false;
-  $('buf-text').textContent = 'Preparing neural voices…';
+  if (!quiet) {
+    $('buffer').hidden = false;
+    $('buf-text').textContent = 'Preparing ' + (lang === 'zh' ? '中文' : 'English') + ' voices…';
+    $('buf-fill').style.width = '0%';
+  }
   updateEnginePill();
 
+  let lastPct = -1, lastNote = '';
   try {
-    // The loader reports every chunk; repainting on each one would thrash
-    // the DOM. Repaint only when the percentage actually moves.
-    let lastPct = -1, lastNote = '';
-    await eng.init(p => {
-      const pct = Math.round(p.pct || 0);
-      const note = p.phase === 'done' ? 'Ready' : String(p.note || '').slice(0, 40);
+    await eng.init(lang, pg => {
+      if (quiet || !pg) return;
+      const pct = Math.round(pg.pct || 0);
+      const note = pg.phase === 'done' ? 'Ready' : String(pg.note || '').slice(0, 40);
       if (pct === lastPct && note === lastNote) return;
       lastPct = pct; lastNote = note;
-      const sizeNote = p.device === 'webgpu' ? 'GPU' : 'CPU';
       $('buf-text').textContent =
-        p.phase === 'done' ? 'Ready'
-        : `Downloading neural voice · ${sizeNote} · ${pct}% · ${note}`;
+        `Downloading ${lang === 'zh' ? '中文' : 'English'} voices · ` +
+        `${pg.device === 'webgpu' ? 'GPU' : 'CPU'} · ${pct}% · ${note}`;
       $('buf-fill').style.width = pct + '%';
     });
-    $('buffer').hidden = true;
+
+    if (!quiet) $('buffer').hidden = true;
     updateEnginePill();
     autoPickVoices();
     renderSettings();
     if (!eng.fast) warnSlowBackend();
-    toast('Neural voices ready — ' + eng.voices.length +
-          ' available on ' + (eng.fast ? 'GPU' : 'CPU'), 'ok');
+    if (!quiet) {
+      const n = eng.packs[lang].voices.length;
+      toast(`${lang === 'zh' ? '中文' : 'English'} voices ready — ${n} available` +
+            ` on ${eng.packs[lang].device === 'webgpu' ? 'GPU' : 'CPU'}`, 'ok');
+    }
     return true;
   } catch (e) {
     $('buffer').hidden = true;
     updateEnginePill();
     console.error(e);
-    toast('Could not load neural voices. Staying on system voices.', 'err');
-    S.engine = 'native';
-    state.engineId = 'native';
-    saveSettings();
-    renderSettings();
+    if (!quiet) toast(`Could not load the ${lang === 'zh' ? '中文' : 'English'} voices.`, 'err');
     return false;
   }
+}
+
+/** Quietly fetch the other language pack so mixed text never stalls. */
+function warmOtherPack(primary) {
+  const other = primary === 'zh' ? 'en' : 'zh';
+  const eng = engines.kokoro;
+  if (eng.packs[other] && eng.packs[other].ready) return;
+  ensurePack(other, { quiet: true }).then(ok => {
+    if (ok) { autoPickVoices(); renderSettings(); }
+  });
 }
 
 async function switchEngine(id) {
@@ -778,8 +823,11 @@ async function switchEngine(id) {
   saveSettings();
 
   if (id === 'kokoro') {
-    const ok = await ensureKokoro();
+    // Start with the language this document is mostly in, then warm the other.
+    const primary = (state.doc && state.doc.langs === 'en') ? 'en' : 'zh';
+    const ok = await ensurePack(primary);
     if (!ok) { renderSettings(); return; }
+    warmOtherPack(primary);
   }
   state.engine = engines[id];
   autoPickVoices();
@@ -955,7 +1003,12 @@ function renderSettings() {
       row.setAttribute('aria-checked', String(v.id === ((v.base || v.lang) === 'zh' ? curZh : curEn)?.id));
       row.appendChild(el('span', 'v-flag', (v.base || v.lang) === 'zh' ? '中' : 'EN'));
       const meta = el('div', 'v-meta');
-      meta.appendChild(el('div', 'v-name', v.name));
+      const nameRow = el('div', 'v-name');
+      nameRow.appendChild(el('span', null, v.name));
+      if (v.grade) {
+        nameRow.appendChild(el('span', 'v-grade' + (v.grade.startsWith('A') ? ' top' : ''), v.grade));
+      }
+      meta.appendChild(nameRow);
       const tags = [(v.base || v.lang) === 'zh' ? '中文' : 'English', v.gender === 'female' ? '女声' : v.gender === 'male' ? '男声' : '']
         .filter(Boolean).join(' · ');
       meta.appendChild(el('div', 'v-tag', tags));
@@ -972,8 +1025,10 @@ function renderSettings() {
             const prev = state.playing;
             if (prev) stopAll();
             const sample = (v.base || v.lang) === 'zh' ? '你好，这是语音试听。' : 'Hello, this is a preview.';
+            const ok = await ensurePack(v.lang);
+            if (!ok) throw new Error('pack unavailable');
             const ac = new AbortController();
-            await eng.play(sample, { voiceId: v.id, speed: 1, volume: 1, signal: ac.signal }, { signal: ac.signal });
+            await eng.play(sample, { voiceId: v.id, speed: 1, volume: 1, pauseAfter: 0.05, signal: ac.signal }, { signal: ac.signal });
           } else {
             const u = new SpeechSynthesisUtterance((v.base || v.lang) === 'zh' ? '你好，这是语音试听。' : 'Hello, this is a preview.');
             u.voice = v._voice; u.lang = v.lang;
@@ -999,7 +1054,7 @@ function renderSettings() {
       `Voices (${eng.voices.length})`));
     s.appendChild(el('p', 'set-note',
       eng.id === 'kokoro'
-        ? 'Tap a voice to use it; ▶ previews it. Chinese and English are chosen separately, so mixed text reads in both.'
+        ? 'Tap a voice to use it; ▶ previews it. Chinese and English are chosen separately, so mixed text reads in both. Grades are the model authors\' own — A is best.'
         : 'These are your operating system voices. Tap to use, ▶ to preview.'));
     s.appendChild(grid);
     body.appendChild(s);
@@ -1031,6 +1086,7 @@ function renderSettings() {
   /* --- reading --- */
   body.appendChild(section('Reading', null,
     labelSwitch('Auto-scroll to the spoken line', S.autoScroll, v => { S.autoScroll = v; saveSettings(); }),
+    labelSwitch('Natural pauses (human pacing)', S.humanize, v => { S.humanize = v; saveSettings(); }),
     labelSwitch('Dim finished sentences', S.dimDone, v => { S.dimDone = v; saveSettings();
       document.querySelectorAll('.s.done').forEach(n => v ? null : n.classList.remove('done')); }),
     labelSwitch('Dark theme', S.theme === 'dark', v => { S.theme = v ? 'dark' : 'light'; applyTheme(); saveSettings(); }),

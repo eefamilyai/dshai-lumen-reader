@@ -256,6 +256,11 @@ export function buildModel(rawText, opts = {}) {
   }
   flush();
 
+  // Mark the last sentence of each block so the reader can rest longer there.
+  for (const b of blocks) {
+    if (b.sentences && b.sentences.length) b.sentences[b.sentences.length - 1].isParaEnd = true;
+  }
+
   // stats
   const all = blocks.flatMap(b => b.sentences || []);
   const chars = all.reduce((n, s) => n + s.text.length, 0);

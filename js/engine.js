@@ -201,22 +201,146 @@ export class NativeEngine {
 }
 
 /* ---------------------------------------------------------- */
-/* Kokoro engine (neural, on-device)                           */
+/* pacing — what makes synthesized speech sound human          */
 /* ---------------------------------------------------------- */
 
-const ZH_GIVEN = ['一号','二号','三号','四号','五号','六号','七号','八号','九号','十号'];
+/**
+ * How long a speaker rests after this piece of text. Flat, gapless delivery
+ * is the single biggest robotic tell; real speech breathes at every mark.
+ */
+export function pauseAfter(text, isParaEnd) {
+  const t = (text || '').trim();
+  if (isParaEnd) return 0.52;
+  if (/[。！？!?…]$/.test(t)) return 0.33;
+  if (/[；;：:]$/.test(t)) return 0.24;
+  if (/[，,、]$/.test(t)) return 0.15;
+  if (/[."'”’)\]]$/.test(t)) return 0.29;
+  return 0.21;
+}
+
+/** Append silence — used to bake a breath into the buffer. */
+function padSilence(audio, rate, seconds) {
+  const pad = Math.max(0, Math.floor(seconds * rate));
+  if (!pad) return audio;
+  const out = new Float32Array(audio.length + pad);
+  out.set(audio, 0);
+  return out;
+}
+
+function concatAudio(a, b) {
+  const out = new Float32Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+/**
+ * A short ramp at each edge. A buffer that starts or stops at full amplitude
+ * clicks; the click is what reads as "computer".
+ */
+function fadeEdges(audio, rate, fadeIn = 0.006, fadeOut = 0.010) {
+  const n = audio.length;
+  const fi = Math.min(Math.floor(fadeIn * rate), Math.floor(n / 3));
+  const fo = Math.min(Math.floor(fadeOut * rate), Math.floor(n / 3));
+  for (let i = 0; i < fi; i++) audio[i] *= i / fi;
+  for (let i = 0; i < fo; i++) audio[n - 1 - i] *= i / fo;
+  return audio;
+}
+
+/**
+ * Roughly how long this text takes to say, in seconds.
+ * CJK glyphs are far denser than Latin letters — 30 汉字 is about as long as
+ * 90 characters of English — so a plain character count would give Chinese
+ * sentences a breath twice as often as English ones.
+ */
+function spokenSeconds(text) {
+  let cjk = 0, other = 0;
+  for (const ch of text) {
+    if (/[\u3400-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(ch)) cjk++;
+    else if (/\S/.test(ch)) other++;
+  }
+  return cjk / 4.6 + other / 13;
+}
+
+/**
+ * Split a long sentence at its commas so each clause gets a breath. Applied
+ * only past a threshold — short sentences already flow, and cutting them
+ * would sound choppier than leaving them whole.
+ */
+export function clauseSplit(text, maxSeconds = 6.5) {
+  const t = (text || '').trim();
+  if (spokenSeconds(t) <= maxSeconds) return [t];
+  const raw = [];
+  let buf = '';
+  for (const ch of t) {
+    buf += ch;
+    if ('，,、;；'.includes(ch) && buf.trim().length >= 12) { raw.push(buf.trim()); buf = ''; }
+  }
+  if (buf.trim()) raw.push(buf.trim());
+  if (raw.length < 2) return [t];
+  // Fold a runt fragment into its neighbour rather than leaving a 2-word gap.
+  const out = [];
+  for (const piece of raw) {
+    const prev = out[out.length - 1];
+    if (prev && (prev.length < 15 || piece.length < 8)) out[out.length - 1] = prev + ' ' + piece;
+    else out.push(piece);
+  }
+  return out;
+}
+
+/* ---------------------------------------------------------- */
+/* Kokoro engine — two voice packs behind one interface        */
+/*                                                             */
+/* English and Mandarin need different front ends: the English */
+/* model phonemizes with espeak, while Mandarin needs the v1.1 */
+/* model's pinyin front end. Keeping one pack per language     */
+/* also gives English the 28 studio voices (af_heart, grade A) */
+/* instead of the three ungraded ones bundled with the Chinese */
+/* model. Each pack downloads only when a sentence needs it.   */
+/* ---------------------------------------------------------- */
+
+const PACKS = {
+  zh: {
+    lang: 'zh',
+    label: '中文',
+    cdn: 'https://cdn.jsdelivr.net/npm/@uzen/kokoro-js@1.2.4/+esm',
+    model: 'onnx-community/Kokoro-82M-v1.1-zh-ONNX',
+    rev: '6cc0f0d2ebe369a68b0df87c2b65c1af8c0ac3e3',
+    voiceDir: 'voices',
+    default: 'zf_001',
+  },
+  en: {
+    lang: 'en',
+    label: 'English',
+    cdn: 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm',
+    model: 'onnx-community/Kokoro-82M-v1.0-ONNX',
+    rev: '1939ad2a8e416c0acfeecc08a694d14ef25f2231',
+    voiceDir: 'voices',
+    default: 'af_heart',
+  },
+};
+
+/** Grade the English voices so the UI can lead with the best ones. */
+const GRADES = {
+  af_heart: 'A', af_bella: 'A-', af_nicole: 'B-', af_aoede: 'C+', af_kore: 'C+',
+  af_sarah: 'C+', af_alloy: 'C', af_nova: 'C', af_sky: 'C-', am_fenrir: 'C+',
+  am_michael: 'C+', am_puck: 'C+', am_onyx: 'C', bf_emma: 'B-', bf_isabella: 'C',
+  bm_george: 'C', bm_fable: 'C', am_echo: 'D', am_eric: 'D', am_liam: 'D',
+  af_jessica: 'D', af_river: 'D', am_adam: 'F+',
+};
+
+/** English voices worth defaulting to, best first. */
+export const EN_PREFERRED = ['af_heart', 'af_bella', 'bf_emma', 'am_fenrir', 'am_michael', 'am_puck'];
+
+const ZH_GIVEN = ['一','二','三','四','五','六','七','八','九','十'];
 
 export class KokoroEngine {
   constructor() {
     this.id = 'kokoro';
     this.label = 'Neural voices';
-    this.ready = false;
-    this.loading = null;
-    this.tts = null;
-    this.voices = [];
-    this.device = null;
-    this.dtype = null;
-    this._cache = new Map();   // sentence text+voice+speed -> {audio, rate}
+    this.packs = {};          // lang -> pack record
+    this.voices = [];         // flattened, from every loaded pack
+    this._cache = new Map();
     this._inflight = new Map();
     this._node = null;
     this._gain = null;
@@ -225,24 +349,46 @@ export class KokoroEngine {
     this._duration = 0;
     this._playing = false;
     this._paused = false;
+    this._finish = null;
+    this._loading = null;
   }
 
-  get status() {
-    if (this.ready) return 'ready';
-    if (this.loading) return 'loading';
-    return 'idle';
+  get ready() { return Object.values(this.packs).some(p => p.ready); }
+  get loading() { return this._loading; }
+  get status() { return this.ready ? 'ready' : (this._loading ? 'loading' : 'idle'); }
+
+  /** Best loaded pack's backend, for the engine note. */
+  get device() {
+    const p = Object.values(this.packs).find(x => x.ready);
+    return p ? p.device : null;
   }
+  get fast() {
+    const p = Object.values(this.packs).find(x => x.ready);
+    return p ? p.fast : true;
+  }
+  /** True once every pack the UI knows about has arrived. */
+  get complete() { return ['zh', 'en'].every(l => this.packs[l] && this.packs[l].ready); }
 
-  /** Download + initialize the model. Safe to call repeatedly. */
-  async init(onProgress) {
-    if (this.ready) return this;
-    if (this.loading) return this.loading;
+  /**
+   * Load the pack for `lang`. Safe to call repeatedly; concurrent calls share
+   * one in-flight promise.
+   */
+  async init(lang = 'zh', onProgress) {
+    const want = PACKS[lang] ? lang : 'zh';
+    const existing = this.packs[want];
+    if (existing && existing.ready) return existing;
+    if (existing && existing.loading) return existing.loading;
 
-    this.loading = (async () => {
-      const mod = await import(/* @vite-ignore */ KOKORO_CDN);
+    const rec = this.packs[want] = existing || { ...PACKS[want], ready: false, voices: [], device: null, fast: true, tts: null };
+    rec.voiceDir = rec.voiceDir || PACKS[want].voiceDir;
+    rec.loading = (async () => {
+      const mod = await import(/* @vite-ignore */ rec.cdn);
       const { KokoroTTS, env } = mod;
       env.allowLocalModels = false;
 
+      // NOTE: this is the directory the library appends `/<voice>.bin` to.
+      // It lives on `voiceDir`, not `voices` — `voices` holds the loaded list.
+      const voicePath = `https://huggingface.co/${rec.model}/resolve/${rec.rev}/${rec.voiceDir}`;
       const wantGpu = typeof navigator !== 'undefined' && !!navigator.gpu;
       const attempts = wantGpu
         ? [['webgpu', 'fp32'], ['webgpu', 'q8'], ['wasm', 'q8']]
@@ -251,96 +397,130 @@ export class KokoroEngine {
       let lastErr = null;
       for (const [device, dtype] of attempts) {
         try {
-          if (onProgress) onProgress({ phase: 'model', device, dtype, pct: 0, note: 'Starting download…' });
-          const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, {
-            dtype, device, revision: KOKORO_REV, voicePath: KOKORO_VOICES,
-            progress_callback: p => {
-              if (!onProgress || !p) return;
-              const pct = typeof p.progress === 'number' ? p.progress : 0;
+          if (onProgress) onProgress({ lang: want, phase: 'model', device, dtype, pct: 0, note: 'Starting download…' });
+          const tts = await KokoroTTS.from_pretrained(rec.model, {
+            dtype, device, revision: rec.rev, voicePath,
+            progress_callback: x => {
+              if (!onProgress || !x) return;
+              const pct = typeof x.progress === 'number' ? x.progress : 0;
               onProgress({
-                phase: p.status === 'ready' ? 'done' : 'model',
+                lang: want,
+                phase: x.status === 'ready' ? 'done' : 'model',
                 device, dtype, pct,
-                note: p.status === 'progress'
-                  ? (p.file || 'model')
-                  : (p.status === 'ready' ? 'Ready' : p.status || ''),
+                note: x.status === 'progress' ? (x.file || 'model')
+                    : x.status === 'ready' ? 'Ready' : (x.status || ''),
               });
             },
           });
-          this.tts = tts;
-          this.device = device;
-          this.dtype = dtype;
+          rec.tts = tts;
+          rec.device = device;
+          rec.fast = device === 'webgpu';
+          rec.rtf = rec.fast ? 0.4 : 3.1;
           break;
         } catch (e) {
           lastErr = e;
-          console.warn('[kokoro] init failed on', device, dtype, e);
+          console.warn('[kokoro] init failed on', want, device, dtype, e);
         }
       }
-      if (!this.tts) throw lastErr || new Error('Could not start the neural voice engine.');
+      if (!rec.tts) throw lastErr || new Error('Could not start the ' + rec.label + ' voices.');
 
-      this.voices = this._readVoices(this.tts);
-      this.ready = true;
-      // How fast is this backend? WASM spends ~3s of compute per second of
-      // audio (too slow to stream); WebGPU stays well under realtime.
-      // `this.device` was set inside the loop above — the loop variable is
-      // block-scoped and not visible here.
-      this.fast = this.device === 'webgpu';
-      this.rtf = this.fast ? 0.4 : 3.1;
-      return this;
+      rec.voices = this._readVoices(rec.tts, want);
+      rec.ready = true;
+      this._reindex();
+      return rec;
     })();
 
-    try { await this.loading; }
-    finally { this.loading = null; }
-    return this;
+    try { await rec.loading; }
+    finally { rec.loading = null; }
+    return rec;
   }
 
-  _readVoices(tts) {
+  /** Load whichever pack owns a voice id, on demand. */
+  async ensureVoice(voiceId, onProgress) {
+    const lang = String(voiceId).split(':')[0];
+    const rec = this.packs[lang];
+    if (rec && rec.ready) return rec;
+    return this.init(lang, onProgress);
+  }
+
+  _reindex() {
+    this.voices = [];
+    for (const lang of ['zh', 'en']) {
+      const rec = this.packs[lang];
+      if (rec && rec.ready) this.voices.push(...rec.voices);
+    }
+    // Chinese first, then English; inside each, female then male, best grade first.
+    const rank = v =>
+      (v.lang === 'zh' ? 0 : 1) * 1e6 +
+      (v.gender === 'female' ? 0 : 1) * 1e5 +
+      (10 - (v.gradeNum ?? 5)) * 1e3 +
+      (parseInt(String(v.raw).slice(3), 10) || 0);
+    this.voices.sort((a, b) => rank(a) - rank(b));
+  }
+
+  _readVoices(tts, lang) {
     const meta = (tts.voices && typeof tts.voices === 'object') ? tts.voices : {};
     const out = [];
-    for (const [id, m] of Object.entries(meta)) {
-      const base = id.slice(0, 2);
-      const lang = id[0] === 'z' ? 'zh' : 'en';
-      const gender = id[1] === 'f' ? 'female' : 'male';
+    for (const [raw, m] of Object.entries(meta)) {
+      const base = raw.slice(0, 2);
+      // Only accept voices that belong to this pack's language.
+      const vLang = raw[0] === 'z' ? 'zh' : 'en';
+      if (vLang !== lang) continue;
+
+      const gender = raw[1] === 'f' ? 'female' : 'male';
       let name;
-      if (/^z[fm]_\d+$/.test(id)) {
-        const n = parseInt(id.slice(3), 10);
-        name = (lang === 'zh' ? '中文' : 'English') + (gender === 'female' ? '女声' : '男声') + ' ' +
+      if (/^z[fm]_\d+$/.test(raw)) {
+        const n = parseInt(raw.slice(3), 10);
+        name = '中文' + (gender === 'female' ? '女声' : '男声') + ' ' +
                (n <= 10 ? ZH_GIVEN[n - 1] : String(n).padStart(3, '0'));
       } else {
-        const raw = (m && m.name) || id.slice(3);
-        name = raw.charAt(0).toUpperCase() + raw.slice(1);
+        const r = (m && m.name) || raw.slice(3);
+        name = r.charAt(0).toUpperCase() + r.slice(1);
       }
+      const grade = GRADES[raw];
       out.push({
-        id, name, lang, base: lang, gender, engine: 'kokoro',
+        id: lang + ':' + raw,
+        raw,
+        name,
+        lang,
+        base: lang,
+        gender,
+        engine: 'kokoro',
+        pack: lang,
+        grade: grade || '',
+        gradeNum: grade ? ({ A: 9, 'A-': 8, 'B+': 7, 'B': 6, 'B-': 5, 'C+': 4, 'C': 3, 'C-': 2, 'D': 1, 'F+': 0 }[grade] ?? 5) : 5,
         accent: base[0] === 'b' ? 'British' : '',
-        quality: (m && m.overallGrade) || '',
       });
     }
-    // Sort: Chinese first (this app's focus), then English; female before male; by number.
-    const rank = v => (v.lang === 'zh' ? 0 : 1) * 1000 + (v.gender === 'female' ? 0 : 100) +
-                     (parseInt(v.id.slice(3), 10) || 0);
-    return out.sort((a, b) => rank(a) - rank(b));
+    return out;
+  }
+
+  _packFor(voiceId) {
+    const lang = String(voiceId).split(':')[0];
+    const rec = this.packs[lang];
+    if (!rec || !rec.ready) throw new Error('The ' + lang + ' voices are not loaded yet.');
+    return rec;
   }
 
   _key(text, voiceId, speed) { return voiceId + '|' + speed + '|' + text; }
 
-  /** Generate one sentence (cached). */
+  /** Generate one piece of text with the pack that owns the voice. */
   async synthesize(text, voiceId, speed, signal) {
     const key = this._key(text, voiceId, speed);
     if (this._cache.has(key)) return this._cache.get(key);
     if (this._inflight.has(key)) return withSignal(this._inflight.get(key), signal);
 
+    const rec = this._packFor(voiceId);
+    const raw = String(voiceId).split(':')[1] || voiceId;
+
     const job = (async () => {
       const t0 = performance.now();
-      const res = await this.tts.generate(text, { voice: voiceId, speed });
-      const raw = res.audio;
-      const audio = raw instanceof Float32Array ? raw : new Float32Array(raw);
+      const res = await rec.tts.generate(text, { voice: raw, speed });
+      const a = res.audio;
+      const audio = a instanceof Float32Array ? a : new Float32Array(a);
       const out = { audio, rate: res.sampling_rate || 24000, ms: performance.now() - t0 };
       this._cache.set(key, out);
-      if (this._cache.size > 48) {
-        // Drop the oldest entries; the queue only ever needs the next few.
-        const first = this._cache.keys().next().value;
-        this._cache.delete(first);
-      }
+      if (this._cache.size > 64) this._cache.delete(this._cache.keys().next().value);
       return out;
     })();
 
@@ -349,25 +529,35 @@ export class KokoroEngine {
     finally { this._inflight.delete(key); }
   }
 
-  /** Warm the cache for an upcoming sentence without blocking. */
   prefetch(text, voiceId, speed, signal) {
-    if (!this.ready) return;
+    const rec = this.packs[String(voiceId).split(':')[0]];
+    if (!rec || !rec.ready) return;
     const key = this._key(text, voiceId, speed);
     if (this._cache.has(key) || this._inflight.has(key)) return;
     this.synthesize(text, voiceId, speed, signal).catch(() => {});
   }
 
-  flush() {
-    this._cache.clear();
-  }
+  flush() { this._cache.clear(); }
 
-  /** Play one sentence through the shared AudioContext. */
-  async play(text, { voiceId, speed = 1, volume = 1 } = {}, hooks = {}) {
-    if (!this.ready) throw new Error('The neural engine is not loaded yet.');
+  async play(text, { voiceId, speed = 1, volume = 1, pauseAfter: rest = 0.2 } = {}, hooks = {}) {
     const ctx = unlockAudio();
-    const { audio, rate } = await this.synthesize(text, voiceId, speed, hooks.signal);
 
+    // Render clause by clause so a long sentence breathes at its commas, then
+    // fade the edges and rest at the end. It stays one buffer, so the
+    // highlight still tracks a single sentence.
+    const clauses = clauseSplit(text);
+    let audio = null, rate = 24000;
+    for (let i = 0; i < clauses.length; i++) {
+      const r = await this.synthesize(clauses[i], voiceId, speed, hooks.signal);
+      rate = r.rate || rate;
+      let piece = r.audio;
+      if (i < clauses.length - 1) piece = padSilence(piece, rate, 0.13);
+      audio = audio ? concatAudio(audio, piece) : piece;
+    }
     if (hooks.signal && hooks.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    audio = fadeEdges(Float32Array.from(audio), rate);
+    if (rest > 0) audio = padSilence(audio, rate, rest);
 
     const buf = ctx.createBuffer(1, audio.length, rate);
     buf.copyToChannel(audio, 0);
@@ -390,7 +580,7 @@ export class KokoroEngine {
 
     return new Promise((resolve, reject) => {
       let done = false;
-      const finish = (err) => {
+      const finish = err => {
         if (done) return;
         done = true;
         this._playing = false;
@@ -399,7 +589,6 @@ export class KokoroEngine {
         if (this._node === node) this._node = null;
         err ? reject(err) : resolve();
       };
-      // Kept on the instance so resume() can re-attach it to the new source.
       this._finish = finish;
       this._attachEnd(node);
 
@@ -414,20 +603,18 @@ export class KokoroEngine {
     });
   }
 
-  /** Wire a buffer source's end to the active completion handler. */
   _attachEnd(node) {
     node.onended = () => {
-      if (this._paused) return;      // a pause stops the node on purpose
+      if (this._paused) return;
       if (this._node !== node) return;
       if (this._finish) this._finish();
     };
   }
 
-  /** Progress within the current sentence, 0..1. */
   progress() {
     if (!this._playing || !this._duration) return 0;
     const ctx = audioCtx();
-    const el = (this._paused ? this._offset : ctx.currentTime - this._startedAt);
+    const el = this._paused ? this._offset : ctx.currentTime - this._startedAt;
     return Math.max(0, Math.min(1, el / this._duration));
   }
 
@@ -466,8 +653,9 @@ export class KokoroEngine {
   dispose() {
     this.stop();
     this._cache.clear();
-    this.tts = null;
-    this.ready = false;
+    for (const rec of Object.values(this.packs)) { rec.tts = null; rec.ready = false; }
+    this.packs = {};
+    this.voices = [];
   }
 }
 
