@@ -6,8 +6,11 @@
    prefetch ahead and keep playback smooth.
    ============================================================ */
 
+// Pinned to an immutable revision so a model update cannot change
+// the voice set or phonemizer behaviour under a published site.
+export const KOKORO_REV    = '6cc0f0d2ebe369a68b0df87c2b65c1af8c0ac3e3';
 export const KOKORO_MODEL  = 'onnx-community/Kokoro-82M-v1.1-zh-ONNX';
-export const KOKORO_VOICES = 'https://huggingface.co/onnx-community/Kokoro-82M-v1.1-zh-ONNX/resolve/main/voices';
+export const KOKORO_VOICES = `https://huggingface.co/onnx-community/Kokoro-82M-v1.1-zh-ONNX/resolve/${KOKORO_REV}/voices`;
 const KOKORO_CDN           = 'https://cdn.jsdelivr.net/npm/@uzen/kokoro-js@1.2.4/+esm';
 
 /* ---------------------------------------------------------- */
@@ -250,7 +253,7 @@ export class KokoroEngine {
         try {
           if (onProgress) onProgress({ phase: 'model', device, dtype, pct: 0, note: 'Starting download…' });
           const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, {
-            dtype, device, voicePath: KOKORO_VOICES,
+            dtype, device, revision: KOKORO_REV, voicePath: KOKORO_VOICES,
             progress_callback: p => {
               if (!onProgress || !p) return;
               const pct = typeof p.progress === 'number' ? p.progress : 0;
