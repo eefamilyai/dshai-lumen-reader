@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lumen Reader — any text, read aloud</title>
+<meta name="description" content="Load any text file and have it read aloud in English or Chinese, at your own pace, with voices you choose.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c9cff'/%3E%3Cpath d='M10 9h3v14h-3zM15 12h3v8h-3zM20 8h3v16h-3z' fill='%230b0d12'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./css/app.css?v=d4991108">
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></symbol>
+  <symbol id="i-prev-s" viewBox="0 0 24 24"><path d="M15.5 6v12L7 12zM6 6h2v12H6z"/></symbol>
+  <symbol id="i-next-s" viewBox="0 0 24 24"><path d="M8.5 6v12L17 12zM16 6h2v12h-2z"/></symbol>
+  <symbol id="i-prev-p" viewBox="0 0 24 24"><path d="M17 6v12L8 12zM7 6h2v12H7zM4 4h16v1.6H4z"/></symbol>
+  <symbol id="i-next-p" viewBox="0 0 24 24"><path d="M7 6v12l9-6zM15 6h2v12h-2zM4 18.4h16V20H4z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2.2h9A1.5 1.5 0 0 1 21 8.7v9.8A1.5 1.5 0 0 1 19.5 20h-15A1.5 1.5 0 0 1 3 18.5z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zm8.5 3.4-.1-1 2-1.5-2-3.4-2.3 1a8 8 0 0 0-1.7-1L16 3.6h-4l-.4 2.5a8 8 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5-.1 1 .1 1-2 1.5 2 3.4 2.3-1a8 8 0 0 0 1.7 1l.4 2.5h4l.4-2.5a8 8 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12h2l1.5-5 2 10 2-13 2 16 2-11 1.5 6 1.5-3h3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 12h6M9 15.5h6M9 8.5h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.4M12 19.6V22M2 12h2.4M19.6 12H22M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M19.1 4.9l-1.7 1.7M6.6 17.4l-1.7 1.7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></symbol>
+</svg>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"><svg><use href="#i-wave"/></svg></span>
+      <span class="brand-name">Lumen<span>Reader</span></span>
+    </div>
+
+    <div class="doc-meta" id="doc-meta" hidden>
+      <svg class="dm-ico"><use href="#i-doc"/></svg>
+      <span class="dm-name" id="doc-name">untitled.txt</span>
+      <span class="dm-dot"></span>
+      <span class="dm-stat" id="doc-stat">—</span>
+    </div>
+
+    <div class="topbar-actions">
+      <button class="btn ghost" id="btn-search" title="Find in text (Ctrl+F)"><svg><use href="#i-search"/></svg><span>Find</span></button>
+      <button class="btn ghost" id="btn-open" title="Open a text file (Ctrl+O)"><svg><use href="#i-open"/></svg><span>Open</span></button>
+      <button class="btn ghost icon-only" id="btn-theme" title="Toggle theme"><svg id="theme-ico"><use href="#i-moon"/></svg></button>
+      <button class="btn primary" id="btn-settings" title="Settings (Ctrl+,)"><svg><use href="#i-gear"/></svg><span>Settings</span></button>
+    </div>
+  </header>
+
+  <div class="searchbar" id="searchbar" hidden>
+    <svg class="sb-ico"><use href="#i-search"/></svg>
+    <input id="search-input" type="search" placeholder="Find in text…" autocomplete="off" spellcheck="false">
+    <span class="sb-count" id="search-count">0/0</span>
+    <button class="btn ghost icon-only sm" id="search-prev" title="Previous match">↑</button>
+    <button class="btn ghost icon-only sm" id="search-next" title="Next match">↓</button>
+    <button class="btn ghost icon-only sm" id="search-close" title="Close"><svg><use href="#i-close"/></svg></button>
+  </div>
+
+  <main class="stage" id="stage">
+    <section class="welcome" id="welcome">
+      <div class="w-inner">
+        <div class="w-badge"><svg><use href="#i-wave"/></svg></div>
+        <h1>Any text, <em>read aloud</em>.</h1>
+        <p class="w-sub">Drop a file and it becomes a reading. Sentences highlight as they are spoken — in English, 中文, or both at once.</p>
+
+        <div class="drop" id="drop">
+          <svg class="drop-ico"><use href="#i-doc"/></svg>
+          <strong>Drop a text file here</strong>
+          <span>or</span>
+          <div class="drop-btns">
+            <button class="btn primary" id="btn-open-2">Choose a file</button>
+            <button class="btn ghost" id="btn-paste">Paste text</button>
+          </div>
+          <small>.txt · .md · .srt · .csv · .json · source code · anything readable</small>
+        </div>
+
+        <div class="samples">
+          <span class="s-label">Or try a sample</span>
+          <div class="s-row">
+            <button class="chip" data-sample="en">English prose</button>
+            <button class="chip" data-sample="zh">中文散文</button>
+            <button class="chip" data-sample="mixed">中英 mixed</button>
+            <button class="chip" data-sample="md">Markdown doc</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <article class="reader" id="reader" hidden></article>
+    <div class="reader-end" id="reader-end" hidden>
+      <span>— end —</span>
+      <button class="btn ghost sm" id="btn-restart" hidden>Read again</button>
+    </div>
+  </main>
+
+  <footer class="transport" id="transport" hidden>
+    <div class="track" id="track" title="Click to jump">
+      <div class="track-fill" id="track-fill"></div>
+      <div class="track-marks" id="track-marks"></div>
+      <div class="track-knob" id="track-knob"></div>
+    </div>
+
+    <div class="transport-row">
+      <div class="t-left">
+        <div class="engine-pill" id="engine-pill" title="Active voice engine">
+          <span class="dot" id="engine-dot"></span>
+          <span id="engine-name">Native voices</span>
+        </div>
+        <div class="voices-mini" id="voices-mini"></div>
+      </div>
+
+      <div class="t-center">
+        <button class="tbtn" id="btn-prev-p" title="Previous paragraph (Shift+←)"><svg><use href="#i-prev-p"/></svg></button>
+        <button class="tbtn" id="btn-prev-s" title="Previous sentence (←)"><svg><use href="#i-prev-s"/></svg></button>
+        <button class="tbtn play" id="btn-play" title="Play / Pause (Space)"><svg id="play-ico"><use href="#i-play"/></svg></button>
+        <button class="tbtn" id="btn-stop" title="Stop (Esc)"><svg><use href="#i-stop"/></svg></button>
+        <button class="tbtn" id="btn-next-s" title="Next sentence (→)"><svg><use href="#i-next-s"/></svg></button>
+        <button class="tbtn" id="btn-next-p" title="Next paragraph (Shift+→)"><svg><use href="#i-next-p"/></svg></button>
+      </div>
+
+      <div class="t-right">
+        <div class="speed-wrap">
+          <button class="speed-btn" id="speed-down" title="Slower">−</button>
+          <button class="speed-val" id="speed-val" title="Reset speed">1.0×</button>
+          <button class="speed-btn" id="speed-up" title="Faster">+</button>
+        </div>
+        <div class="clock">
+          <span id="pos-label">0 / 0</span>
+          <span class="cl-sep">·</span>
+          <span id="time-label">— left</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="buffer" id="buffer" hidden>
+      <span class="buf-spin"></span>
+      <span id="buf-text">Preparing voice…</span>
+      <div class="buf-bar"><div id="buf-fill"></div></div>
+    </div>
+  </footer>
+
+  <aside class="drawer" id="drawer" hidden>
+    <div class="drawer-head">
+      <h2>Settings</h2>
+      <button class="btn ghost icon-only" id="btn-drawer-close" title="Close"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <div class="toasts" id="toasts"></div>
+</div>
+
+<input type="file" id="file-input" hidden accept=".txt,.md,.markdown,.srt,.vtt,.csv,.tsv,.json,.yaml,.yml,.log,.rst,.html,.htm,.xml,.js,.ts,.py,.java,.c,.h,.cpp,.cs,.go,.rs,.rb,.php,.sh,.sql,.ini,.cfg,.toml,text/*">
+
+<script type="module" src="./js/app.js?v=d4991108"></script>
+</body>
+</html>
